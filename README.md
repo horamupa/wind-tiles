@@ -37,6 +37,14 @@ python3 -m venv .venv
 
 Скачанные GRIB — недоверенные данные: держите рабочий каталог вне репозитория, Python запускайте с `-I`.
 
+Сборка последнего прогона (без `--force` — только если он новее выложенного). Зеркало ECMWF Open Data — Google Cloud (`source.SOURCE = "google"`): AWS 28.10.2026 отвечал 503 Slow Down на каждый запрос.
+
+```bash
+.venv/bin/python -I -m windtiles.build --force --out "$TMPDIR/wt/site" --work "$TMPDIR/wt/grib"
+```
+
+Замер на Mac (28.10.2026, прогон 06Z, зеркало Google): 8 мин 44 с (3.3 мин CPU, остальное — загрузка 282 MB GRIB); 7 938 тайлов, 292 MB.
+
 ## Атрибуция ECMWF
 
 Copyright © 2026 ECMWF. Источник: [www.ecmwf.int](https://www.ecmwf.int). Данные распространяются по лицензии [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
