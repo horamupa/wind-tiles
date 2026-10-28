@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "windtiles"
+version = "0.1.0"
+description = "ECMWF open data wind tiles for Pilot Force"
+requires-python = ">=3.14"
+dependencies = ["ecmwf-opendata", "eccodes", "numpy", "pillow"]
+
+[tool.setuptools]
+packages = ["windtiles"]
