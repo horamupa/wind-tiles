@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from windtiles.source import read_fields
 
-def grib(path, ni=1440, nj=721, step_deg=0.25, first_lat=90.0):
+def grib(path, ni=1440, nj=721, step_deg=0.25, first_lat=90.0, keys=None, values=None):
     handle = eccodes.codes_grib_new_from_samples("regular_ll_pl_grib2")
     eccodes.codes_set_key_vals(handle, {
         "shortName": "u", "level": 250, "step": 6, "Ni": ni, "Nj": nj,
@@ -12,9 +12,10 @@ def grib(path, ni=1440, nj=721, step_deg=0.25, first_lat=90.0):
         "latitudeOfLastGridPointInDegrees": first_lat - (nj - 1) * step_deg,
         "longitudeOfFirstGridPointInDegrees": 180.0,
         "longitudeOfLastGridPointInDegrees": 180.0 + (ni - 1) * step_deg - 360,
+        **(keys or {}),
     })
-    rows = np.repeat(np.arange(nj, dtype=np.float64)[:, None], ni, axis=1)  # value = GRIB row
-    eccodes.codes_set_values(handle, rows.ravel())
+    rows = np.repeat(np.arange(nj, dtype=np.float64)[:, None] / 10, ni, axis=1)  # value = GRIB row / 10
+    eccodes.codes_set_values(handle, rows.ravel() if values is None else values)
     with open(path, "wb") as file:
         eccodes.codes_write(handle, file)
     eccodes.codes_release(handle)
@@ -24,10 +25,28 @@ def test_reads_and_normalizes_a_global_field(tmp_path):
     fields = read_fields([grib(tmp_path / "pl.grib2")])
     globe = fields[("u", 250, 6)]
     assert globe.shape == (721, 1440)
-    assert globe[0, 0] == pytest.approx(720, abs=0.1)   # south pole is the last GRIB row
+    assert globe[0, 0] == pytest.approx(72, abs=0.1)   # south pole is the last GRIB row
     assert globe[720, 0] == pytest.approx(0, abs=0.1)
 
 @pytest.mark.parametrize("grid", [{"ni": 720, "step_deg": 0.5}, {"nj": 361, "step_deg": 0.5}, {"first_lat": 89.75}])
 def test_rejects_a_foreign_grid(tmp_path, grid):
     with pytest.raises(ValueError, match="u 250 6"):
         read_fields([grib(tmp_path / "bad.grib2", **grid)])
+
+@pytest.mark.parametrize("keys", [{"iScansNegatively": 1}, {"jScansPositively": 1}])
+def test_rejects_a_flipped_scan(tmp_path, keys):
+    with pytest.raises(ValueError, match="u 250 6: scanned"):
+        read_fields([grib(tmp_path / "flip.grib2", keys=keys)])
+
+def test_rejects_missing_values(tmp_path):
+    values = np.zeros(1440 * 721)
+    values[100] = 9999
+    with pytest.raises(ValueError, match="u 250 6: has missing"):
+        read_fields([grib(tmp_path / "gap.grib2", keys={"bitmapPresent": 1, "missingValue": 9999}, values=values)])
+
+@pytest.mark.parametrize("keys, value", [({}, 150.0), ({}, -151.0), ({"shortName": "t"}, 140.0)])
+def test_rejects_a_value_out_of_range(tmp_path, keys, value):
+    values = np.full(1440 * 721, 250.0 if keys else 10.0)
+    values[100] = value
+    with pytest.raises(ValueError, match="out of range"):
+        read_fields([grib(tmp_path / "range.grib2", keys=keys, values=values)])

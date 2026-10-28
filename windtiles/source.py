@@ -12,6 +12,9 @@ SOURCE = "google"  # ECMWF open data mirror; AWS answered 503 Slow Down on 2026-
 PL_LEVELS = [850, 700, 500, 400, 300, 250, 200, 150]
 PL_PARAMS = ["u", "v", "t"]
 SFC_PARAMS = ["10u", "10v", "2t", "sp"]
+WINDS = {"u", "v", "10u", "10v"}
+WIND_LIMIT = 150  # m/s; |wind| at or past it is a broken field
+RANGES = {"t": (150, 350), "2t": (150, 350), "sp": (30_000, 115_000)}  # K, K, Pa
 
 
 def latest_run(client) -> datetime:
@@ -57,5 +60,14 @@ def _read_message(handle) -> tuple[tuple[str, int, int], np.ndarray]:
         or abs(first_lat) != 90
     ):
         raise ValueError(f"{' '.join(map(str, key))}: not a global {STEP_DEG}° {NI} × {NJ} grid from a pole")
+    if get("iScansNegatively") != 0 or get("jScansPositively") != (1 if first_lat < 0 else 0):
+        raise ValueError(f"{' '.join(map(str, key))}: scanned against the first point")
+    if get("bitmapPresent"):
+        raise ValueError(f"{' '.join(map(str, key))}: has missing values")
     values = eccodes.codes_get_values(handle).reshape(NJ, NI)
+    if not np.isfinite(values).all():
+        raise ValueError(f"{' '.join(map(str, key))}: non-finite values")
+    low, high = RANGES.get(key[0], (-np.inf, np.inf))
+    if (key[0] in WINDS and np.abs(values).max() >= WIND_LIMIT) or values.min() < low or values.max() > high:
+        raise ValueError(f"{' '.join(map(str, key))}: values out of range")
     return key, normalize(values, first_lat, get("longitudeOfFirstGridPointInDegrees"))

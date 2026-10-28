@@ -26,7 +26,7 @@ INDEX_HTML = """<!doctype html>
 <p>Wind tiles for Pilot Force. This service is based on data and products of the European Centre
 for Medium-Range Weather Forecasts (<a href="https://www.ecmwf.int">ECMWF</a>).
 Copyright © {year} ECMWF. Licence <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>.
-Changed: coarsened to 0.5° and 1°, 8 bits per value, masked below ground.
+Changed: u, v in knots, T in °C, coarsened to 0.5° and 1°, 8 bits per value, masked below ground.
 ECMWF does not accept any liability whatsoever for any error or omission in the data, their availability,
 or for any loss or damage arising from their use.</p>
 </html>
