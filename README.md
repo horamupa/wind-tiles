@@ -1,6 +1,6 @@
 # wind-tiles
 
-Тайлы ветра и температуры для карты приложения Pilot Force. Источник — открытые данные прогноза ECMWF IFS (сетка 0.25°). Конвейер на Python скачивает GRIB2, режет глобальное поле на PNG-тайлы и выкладывает их на Firebase Hosting (`https://tiles.builtfor.app/wind/v1/`).
+Тайлы ветра и температуры для карты приложения Pilot Force. Источник — открытые данные прогноза ECMWF IFS (сетка 0.25°). Конвейер на Python скачивает GRIB2, режет глобальное поле на PNG-тайлы и выкладывает их на Firebase Hosting (`https://tiles.aviationweather.pro/wind/v1/`).
 
 ## Тайл
 
