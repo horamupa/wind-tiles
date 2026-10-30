@@ -66,14 +66,23 @@ def test_hazard_tiles_with_the_wind(tmp_path):
     s, cape, rate = decode_tile((tmp_path / "hazards/v1/2026101900/2026101906/col/3/2/7.png").read_bytes())
     assert np.allclose(s, 0.5, atol=0.01) and np.allclose(cape, 800) and np.allclose(rate, 1.55, atol=0.01)
 
-def test_thunderstorm_zone_widens_by_half_a_degree_and_cape_rate_do_not():
+def test_thunderstorm_zone_cape_and_rate_widen_by_half_a_degree():
     f = fields()
     f[("mucape", 0, 6)], f[("cp", 0, 6)] = globe(0.0), globe(0.003)  # no CAPE, no rain
     f[("mucape", 0, 6)][360, 720], f[("cp", 0, 6)][360, 720] = 1500.0, 0.012  # one node: 3 mm/h
     s, cape, rate = hazard_fields(f, "col", 6)
-    assert s[360, 720] == 1 and s[362, 722] == 1 and s[358, 718] == 1  # ±2 nodes = ±0.5° in both axes
-    assert s[363, 720] == 0 and s[360, 723] == 0 and s[357, 717] == 0
-    assert np.count_nonzero(cape) == 1 and np.count_nonzero(rate) == 1
+    for channel, peak in ((s, 1), (cape, 1500), (rate, 3)):  # ±2 nodes = ±0.5° in both axes
+        assert np.allclose([channel[360, 720], channel[362, 722], channel[358, 718]], peak, atol=0.01)
+        assert channel[363, 720] == 0 and channel[360, 723] == 0 and channel[357, 717] == 0
+
+def test_a_hazard_data_failure_keeps_the_wind(tmp_path, capsys):
+    f = fields()
+    del f[("mucape", 0, 6)]
+    count = build(RUN, f, tmp_path, levels=["250"], hazard_levels=["250", "col"], steps=[6])
+    assert count == 42 and len(list((tmp_path / "wind/v1/2026101900/2026101906/250").rglob("*.png"))) == 42
+    assert not (tmp_path / "hazards").exists()
+    assert (tmp_path / "wind/v1/manifest.json").exists() and (tmp_path / "index.html").exists()
+    assert "skip hazards" in capsys.readouterr().out
 
 def test_hazards_below_ground_are_masked():
     s, _, _ = hazard_fields(fields(sp_pa=80_000.0), "850", 6)

@@ -53,14 +53,23 @@ MUCAPE = {"shortName": "mucape", "typeOfLevel": "mostUnstableParcel"}  # level 2
 
 @pytest.mark.parametrize("keys, valid, value", [
     ({}, 10.0, 150.0), ({}, 10.0, -151.0), ({"shortName": "t"}, 250.0, 140.0),
-    ({"shortName": "gh"}, 10_000.0, 30_000), ({"shortName": "r"}, 50.0, 200),
-    ({"shortName": "r"}, 50.0, -11), (MUCAPE, 500.0, 25_000),
 ])
-def test_rejects_a_value_out_of_range(tmp_path, keys, valid, value):
+def test_rejects_a_wind_value_out_of_range(tmp_path, keys, valid, value):
     values = np.full(1440 * 721, valid)
     values[100] = value
     with pytest.raises(ValueError, match="out of range"):
         read_fields([grib(tmp_path / "range.grib2", keys=keys, values=values)])
+
+@pytest.mark.parametrize("keys, valid, value, name", [
+    ({"shortName": "gh"}, 10_000.0, 30_000, "gh 250 6"), ({"shortName": "r"}, 50.0, 200, "r 250 6"),
+    ({"shortName": "r"}, 50.0, -11, "r 250 6"), (MUCAPE, 500.0, 25_000, "mucape 0 6"),
+])
+def test_skips_a_hazard_value_out_of_range(tmp_path, capsys, keys, valid, value, name):
+    values = np.full(1440 * 721, valid)
+    values[100] = value
+    fields = read_fields([grib(tmp_path / "pl.grib2"), grib(tmp_path / "range.grib2", keys=keys, values=values)])
+    assert set(fields) == {("u", 250, 6)}  # the wind field next to it is still read
+    assert capsys.readouterr().out == f"skip {name}: values out of range\n"
 
 def test_accepts_slightly_negative_humidity(tmp_path):  # IFS sends r down to −5.6 %
     values = np.full(1440 * 721, 50.0)

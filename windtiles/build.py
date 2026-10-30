@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import shutil
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -40,7 +41,7 @@ for Medium-Range Weather Forecasts (<a href="https://www.ecmwf.int">ECMWF</a>).
 Copyright © {year} ECMWF. Licence <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>.
 Changed: u, v in knots, T in °C, coarsened to 0.5° and 1°, 8 bits per value, masked below ground.
 Derived: turbulence index (Ellrod TI1), icing potential from T and RH, freezing level, thunderstorm index
-from MUCAPE and convective precipitation, its zones widened by 0.5°; turbulence and icing at 0.5° and 1° take
+from MUCAPE and convective precipitation, its zones, MUCAPE and rate widened by 0.5°; turbulence and icing at 0.5° and 1° take
 the maximum around each node.
 ECMWF does not accept any liability whatsoever for any error or omission in the data, their availability,
 or for any loss or damage arising from their use.</p>
@@ -65,11 +66,11 @@ def level_fields(fields, level: str, step: int) -> tuple[np.ndarray, np.ndarray,
 
 def hazard_fields(fields, level: str, step: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Turbulence S, icing S, freezing level FL of a pressure level, NaN below ground;
-    thunderstorm S widened by ±0.5°, MUCAPE (J/kg), convective rate (mm/h) of "col"."""
+    thunderstorm S, MUCAPE (J/kg), convective rate (mm/h) of "col", each widened to its maximum within ±0.5°."""
     if level == "col":
         mucape = fields[("mucape", 0, step)]
         rate = hazards.convective_rate(fields[("cp", 0, step)], fields[("cp", 0, step - 3)])
-        return hazards.max_pool(hazards.thunderstorm(mucape, rate), STORM_POOL), mucape, rate
+        return tuple(hazards.max_pool(x, STORM_POOL) for x in (hazards.thunderstorm(mucape, rate), mucape, rate))
     hpa = int(level)
     sp = fields[("sp", 0, step)]
     below, above = ((fields[("u", p, step)], fields[("v", p, step)], fields[("gh", p, step)]) for p in NEIGHBORS[hpa])
@@ -82,26 +83,42 @@ def hazard_fields(fields, level: str, step: int) -> tuple[np.ndarray, np.ndarray
 
 
 def build(run: datetime, fields, out: Path, levels=LEVELS, hazard_levels=HAZARD_LEVELS, steps=None) -> int:
-    """Wind and hazard tiles of every level and step, then the manifest and index.html; returns the tile count."""
+    """Wind tiles, then hazard tiles of every level and step, then the manifest and index.html; returns the tile count.
+    A hazard data failure drops every hazard tile and keeps the wind."""
     steps = STEPS if steps is None else steps
     count = 0
     for index, step in enumerate(steps):
-        frame = f"{run:%Y%m%d%H}/{run + timedelta(hours=step):%Y%m%d%H}"
         for level in levels:
             u, v, t = level_fields(fields, level, step)
             if index == 0:
                 _summary(level, u, v, t)
-            count += _write_tiles(out / f"wind/v1/{frame}/{level}", (u, v, t), pooled=0)
-        for level in hazard_levels:
-            channels = hazard_fields(fields, level, step)
-            if index == 0:
-                _hazard_summary(level, channels[: 1 if level == "col" else 2])
-            pooled = 0 if level == "col" else 2  # col S is already widened in hazard_fields
-            count += _write_tiles(out / f"hazards/v1/{frame}/{level}", channels, pooled)
+            count += _write_tiles(out / f"wind/v1/{_frame(run, step)}/{level}", (u, v, t), pooled=0)
+    try:
+        count += _write_hazards(run, fields, out, hazard_levels, steps)
+    except (KeyError, ValueError) as error:
+        shutil.rmtree(out / "hazards", ignore_errors=True)
+        print(f"skip hazards: {error!r}")
     manifest = {"run": _iso(run), "frames": [_iso(run + timedelta(hours=step)) for step in steps]}
     (out / "wind/v1/manifest.json").write_text(json.dumps(manifest))
     (out / "index.html").write_text(INDEX_HTML.format(year=run.year))
     return count
+
+
+def _write_hazards(run: datetime, fields, out: Path, hazard_levels, steps) -> int:
+    """Hazard tiles of every level and step; returns the tile count."""
+    count = 0
+    for index, step in enumerate(steps):
+        for level in hazard_levels:
+            channels = hazard_fields(fields, level, step)
+            if index == 0:
+                _hazard_summary(level, channels[: 1 if level == "col" else 2])
+            pooled = 0 if level == "col" else 2  # col is already widened in hazard_fields
+            count += _write_tiles(out / f"hazards/v1/{_frame(run, step)}/{level}", channels, pooled)
+    return count
+
+
+def _frame(run: datetime, step: int) -> str:
+    return f"{run:%Y%m%d%H}/{run + timedelta(hours=step):%Y%m%d%H}"
 
 
 def _write_tiles(directory: Path, channels, pooled: int) -> int:

@@ -6,12 +6,14 @@ from pathlib import Path
 import eccodes
 import numpy as np
 
-from windtiles.grid import NI, NJ, STEP_DEG, normalize
+from windtiles.grid import LEVELS, NI, NJ, STEP_DEG, normalize
 
 SOURCE = "google"  # ECMWF open data mirror; AWS answered 503 Slow Down on 2026-10-28
 PL_LEVELS = [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100]
 PL_PARAMS = ["u", "v", "t", "gh", "r"]
-SFC_PARAMS = ["10u", "10v", "2t", "sp", "mucape", "cp"]
+SFC_WIND = ["10u", "10v", "2t", "sp"]  # surface fields the wind tiles read
+SFC_PARAMS = SFC_WIND + ["mucape", "cp"]
+PL_WIND = ["u", "v", "t"]  # pressure-level fields the wind tiles read on LEVELS
 WINDS = {"u", "v", "10u", "10v"}
 WIND_LIMIT = 150  # m/s; |wind| at or past it is a broken field
 RANGES = {  # K, K, Pa, m, %, J/kg, m
@@ -47,18 +49,33 @@ def read_fields(paths: list[Path]) -> dict[tuple[str, int, int], np.ndarray]:
     for path in paths:
         with open(path, "rb") as file:
             while (handle := eccodes.codes_grib_new_from_file(file)) is not None:
+                key = _key(handle)
                 try:
-                    key, globe = _read_message(handle)
+                    fields[key] = _read_message(handle, key)
+                except ValueError as error:
+                    if _wind_needs(*key[:2]):
+                        raise
+                    print(f"skip {error}")
                 finally:
                     eccodes.codes_release(handle)
-                fields[key] = globe
     return fields
 
 
-def _read_message(handle) -> tuple[tuple[str, int, int], np.ndarray]:
+def _wind_needs(name: str, level: int) -> bool:
+    """A field the wind tiles read: a broken one stops the build; any other is skipped."""
+    if level == 0:
+        return name in SFC_WIND
+    return name in PL_WIND and str(level) in LEVELS
+
+
+def _key(handle) -> tuple[str, int, int]:
     get = lambda name: eccodes.codes_get(handle, name)
     pressure = get("typeOfLevel") == "isobaricInhPa"
-    key = (get("shortName"), get("level") if pressure else 0, eccodes.codes_get_long(handle, "step"))
+    return get("shortName"), get("level") if pressure else 0, eccodes.codes_get_long(handle, "step")
+
+
+def _read_message(handle, key: tuple[str, int, int]) -> np.ndarray:
+    get = lambda name: eccodes.codes_get(handle, name)
     first_lat = get("latitudeOfFirstGridPointInDegrees")
     if (
         get("Ni") != NI
@@ -78,4 +95,4 @@ def _read_message(handle) -> tuple[tuple[str, int, int], np.ndarray]:
     low, high = RANGES.get(key[0], (-np.inf, np.inf))
     if (key[0] in WINDS and np.abs(values).max() >= WIND_LIMIT) or values.min() < low or values.max() > high:
         raise ValueError(f"{' '.join(map(str, key))}: values out of range")
-    return key, normalize(values, first_lat, get("longitudeOfFirstGridPointInDegrees"))
+    return normalize(values, first_lat, get("longitudeOfFirstGridPointInDegrees"))
