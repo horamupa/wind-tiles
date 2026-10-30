@@ -66,6 +66,15 @@ def test_hazard_tiles_with_the_wind(tmp_path):
     s, cape, rate = decode_tile((tmp_path / "hazards/v1/2026101900/2026101906/col/3/2/7.png").read_bytes())
     assert np.allclose(s, 0.5, atol=0.01) and np.allclose(cape, 800) and np.allclose(rate, 1.55, atol=0.01)
 
+def test_thunderstorm_zone_widens_by_half_a_degree_and_cape_rate_do_not():
+    f = fields()
+    f[("mucape", 0, 6)], f[("cp", 0, 6)] = globe(0.0), globe(0.003)  # no CAPE, no rain
+    f[("mucape", 0, 6)][360, 720], f[("cp", 0, 6)][360, 720] = 1500.0, 0.012  # one node: 3 mm/h
+    s, cape, rate = hazard_fields(f, "col", 6)
+    assert s[360, 720] == 1 and s[362, 722] == 1 and s[358, 718] == 1  # ±2 nodes = ±0.5° in both axes
+    assert s[363, 720] == 0 and s[360, 723] == 0 and s[357, 717] == 0
+    assert np.count_nonzero(cape) == 1 and np.count_nonzero(rate) == 1
+
 def test_hazards_below_ground_are_masked():
     s, _, _ = hazard_fields(fields(sp_pa=80_000.0), "850", 6)
     assert np.isnan(s).all()

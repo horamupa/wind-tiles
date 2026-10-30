@@ -19,6 +19,7 @@ MAX_AGE = timedelta(hours=18)
 KT_PER_MS = 1.943844
 KELVIN = 273.15
 HAZARD_LEVELS = ["850", "700", "500", "400", "300", "250", "200", "150", "col"]
+STORM_POOL = 4  # max over ±2 nodes = ±0.5°: the model misplaces cells by tens of miles (README «Сверка»)
 NEIGHBORS = {  # hPa → (below, above) for the vertical wind shear
     850: (925, 700),
     700: (850, 600),
@@ -39,7 +40,8 @@ for Medium-Range Weather Forecasts (<a href="https://www.ecmwf.int">ECMWF</a>).
 Copyright © {year} ECMWF. Licence <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>.
 Changed: u, v in knots, T in °C, coarsened to 0.5° and 1°, 8 bits per value, masked below ground.
 Derived: turbulence index (Ellrod TI1), icing potential from T and RH, freezing level, thunderstorm index
-from MUCAPE and convective precipitation; hazard indices at 0.5° and 1° take the maximum around each node.
+from MUCAPE and convective precipitation, its zones widened by 0.5°; turbulence and icing at 0.5° and 1° take
+the maximum around each node.
 ECMWF does not accept any liability whatsoever for any error or omission in the data, their availability,
 or for any loss or damage arising from their use.</p>
 </html>
@@ -63,11 +65,11 @@ def level_fields(fields, level: str, step: int) -> tuple[np.ndarray, np.ndarray,
 
 def hazard_fields(fields, level: str, step: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Turbulence S, icing S, freezing level FL of a pressure level, NaN below ground;
-    thunderstorm S, MUCAPE (J/kg), convective rate (mm/h) of "col"."""
+    thunderstorm S widened by ±0.5°, MUCAPE (J/kg), convective rate (mm/h) of "col"."""
     if level == "col":
         mucape = fields[("mucape", 0, step)]
         rate = hazards.convective_rate(fields[("cp", 0, step)], fields[("cp", 0, step - 3)])
-        return hazards.thunderstorm(mucape, rate), mucape, rate
+        return hazards.max_pool(hazards.thunderstorm(mucape, rate), STORM_POOL), mucape, rate
     hpa = int(level)
     sp = fields[("sp", 0, step)]
     below, above = ((fields[("u", p, step)], fields[("v", p, step)], fields[("gh", p, step)]) for p in NEIGHBORS[hpa])
@@ -92,9 +94,9 @@ def build(run: datetime, fields, out: Path, levels=LEVELS, hazard_levels=HAZARD_
             count += _write_tiles(out / f"wind/v1/{frame}/{level}", (u, v, t), pooled=0)
         for level in hazard_levels:
             channels = hazard_fields(fields, level, step)
-            pooled = 1 if level == "col" else 2
             if index == 0:
-                _hazard_summary(level, channels[:pooled])
+                _hazard_summary(level, channels[: 1 if level == "col" else 2])
+            pooled = 0 if level == "col" else 2  # col S is already widened in hazard_fields
             count += _write_tiles(out / f"hazards/v1/{frame}/{level}", channels, pooled)
     manifest = {"run": _iso(run), "frames": [_iso(run + timedelta(hours=step)) for step in steps]}
     (out / "wind/v1/manifest.json").write_text(json.dumps(manifest))
