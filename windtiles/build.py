@@ -1,4 +1,4 @@
-"""Build one ECMWF run into PNG wind tiles, the manifest and index.html."""
+"""Build one ECMWF run into PNG wind and hazard tiles, the manifest and index.html."""
 
 import argparse
 import json
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from windtiles import source
+from windtiles import hazards, source
 from windtiles.encode import encode_tile
 from windtiles.grid import LEVELS, ZOOMS, tile_grid, tile_nodes
 
@@ -18,6 +18,17 @@ STEPS = list(range(6, 67, 3))
 MAX_AGE = timedelta(hours=18)
 KT_PER_MS = 1.943844
 KELVIN = 273.15
+HAZARD_LEVELS = ["850", "700", "500", "400", "300", "250", "200", "150", "col"]
+NEIGHBORS = {  # hPa → (below, above) for the vertical wind shear
+    850: (925, 700),
+    700: (850, 600),
+    500: (600, 400),
+    400: (500, 300),
+    300: (400, 250),
+    250: (300, 200),
+    200: (250, 150),
+    150: (200, 100),
+}
 
 INDEX_HTML = """<!doctype html>
 <html lang="en">
@@ -27,6 +38,8 @@ INDEX_HTML = """<!doctype html>
 for Medium-Range Weather Forecasts (<a href="https://www.ecmwf.int">ECMWF</a>).
 Copyright © {year} ECMWF. Licence <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>.
 Changed: u, v in knots, T in °C, coarsened to 0.5° and 1°, 8 bits per value, masked below ground.
+Derived: turbulence index (Ellrod TI1), icing potential from T and RH, freezing level, thunderstorm index
+from MUCAPE and convective precipitation; hazard indices at 0.5° and 1° take the maximum around each node.
 ECMWF does not accept any liability whatsoever for any error or omission in the data, their availability,
 or for any loss or damage arising from their use.</p>
 </html>
@@ -48,29 +61,59 @@ def level_fields(fields, level: str, step: int) -> tuple[np.ndarray, np.ndarray,
     return tuple(np.where(ground, np.nan, x).astype(np.float32) for x in (u * KT_PER_MS, v * KT_PER_MS, t - KELVIN))
 
 
-def build(run: datetime, fields, out: Path, levels=LEVELS, steps=None) -> int:
-    """Tiles of every level and step, then the manifest and index.html; returns the tile count."""
+def hazard_fields(fields, level: str, step: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Turbulence S, icing S, freezing level FL of a pressure level, NaN below ground;
+    thunderstorm S, MUCAPE (J/kg), convective rate (mm/h) of "col"."""
+    if level == "col":
+        mucape = fields[("mucape", 0, step)]
+        rate = hazards.convective_rate(fields[("cp", 0, step)], fields[("cp", 0, step - 3)])
+        return hazards.thunderstorm(mucape, rate), mucape, rate
+    hpa = int(level)
+    sp = fields[("sp", 0, step)]
+    below, above = ((fields[("u", p, step)], fields[("v", p, step)], fields[("gh", p, step)]) for p in NEIGHBORS[hpa])
+    turbulence = hazards.turbulence(fields[("u", hpa, step)], fields[("v", hpa, step)], below, above)
+    icing = hazards.icing(fields[("t", hpa, step)], fields[("r", hpa, step)])
+    temperatures = {p: fields[("t", p, step)] for p in source.PL_LEVELS if p >= 300}
+    freezing = hazards.freezing_level(fields[("2t", 0, step)], sp, temperatures)
+    ground = sp < hpa * 100
+    return tuple(np.where(ground, np.nan, x).astype(np.float32) for x in (turbulence, icing, freezing))
+
+
+def build(run: datetime, fields, out: Path, levels=LEVELS, hazard_levels=HAZARD_LEVELS, steps=None) -> int:
+    """Wind and hazard tiles of every level and step, then the manifest and index.html; returns the tile count."""
     steps = STEPS if steps is None else steps
-    root = out / "wind/v1"
     count = 0
     for index, step in enumerate(steps):
-        frame = run + timedelta(hours=step)
+        frame = f"{run:%Y%m%d%H}/{run + timedelta(hours=step):%Y%m%d%H}"
         for level in levels:
             u, v, t = level_fields(fields, level, step)
             if index == 0:
                 _summary(level, u, v, t)
-            for zoom in ZOOMS:
-                rows, columns = tile_grid(zoom)
-                for row in range(rows):
-                    for column in range(columns):
-                        path = root / f"{run:%Y%m%d%H}/{frame:%Y%m%d%H}/{level}/{zoom}/{row}/{column}.png"
-                        path.parent.mkdir(parents=True, exist_ok=True)
-                        nodes = (tile_nodes(x, zoom, row, column) for x in (u, v, t))
-                        path.write_bytes(encode_tile(*nodes))
-                        count += 1
+            count += _write_tiles(out / f"wind/v1/{frame}/{level}", (u, v, t), pooled=0)
+        for level in hazard_levels:
+            channels = hazard_fields(fields, level, step)
+            pooled = 1 if level == "col" else 2
+            if index == 0:
+                _hazard_summary(level, channels[:pooled])
+            count += _write_tiles(out / f"hazards/v1/{frame}/{level}", channels, pooled)
     manifest = {"run": _iso(run), "frames": [_iso(run + timedelta(hours=step)) for step in steps]}
-    (root / "manifest.json").write_text(json.dumps(manifest))
+    (out / "wind/v1/manifest.json").write_text(json.dumps(manifest))
     (out / "index.html").write_text(INDEX_HTML.format(year=run.year))
+    return count
+
+
+def _write_tiles(directory: Path, channels, pooled: int) -> int:
+    """Every zoom's tiles of one level; the first `pooled` channels (S) take the maximum around each node."""
+    count = 0
+    for zoom, stride in ZOOMS.items():
+        globes = [hazards.max_pool(x, stride) if i < pooled and stride > 1 else x for i, x in enumerate(channels)]
+        rows, columns = tile_grid(zoom)
+        for row in range(rows):
+            for column in range(columns):
+                path = directory / f"{zoom}/{row}/{column}.png"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(encode_tile(*(tile_nodes(x, zoom, row, column) for x in globes)))
+                count += 1
     return count
 
 
@@ -80,6 +123,11 @@ def _summary(level: str, u, v, t) -> None:
         f"{level:>4}: max {np.nanmax(speed):.0f} kt, T {np.nanmin(t):.1f} … {np.nanmax(t):.1f} °C,"
         f" no data {np.isnan(speed).mean():.1%}"
     )
+
+
+def _hazard_summary(level: str, severities) -> None:
+    shares = ", ".join(f"S ≥ 0.25 {np.mean(s >= 0.25):.1%} ≥ 0.5 {np.mean(s >= 0.5):.1%}" for s in severities)
+    print(f"{level:>4} hazards: {shares}")
 
 
 def _iso(time: datetime) -> str:

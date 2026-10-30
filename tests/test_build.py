@@ -1,7 +1,10 @@
 from datetime import datetime, timedelta, timezone
 import json
 import numpy as np
-from windtiles.build import build, decide, frames, level_fields
+from windtiles.build import build, decide, frames, hazard_fields, level_fields
+from windtiles.encode import decode_tile
+from windtiles.hazards import pressure_altitude_ft
+from windtiles.source import PL_LEVELS
 
 RUN = datetime(2026, 10, 19, 0, tzinfo=timezone.utc)
 
@@ -9,11 +12,12 @@ def globe(value):
     return np.full((721, 1440), value, dtype=np.float32)
 
 def fields(sp_pa=101_325.0):
-    f = {("sp", 0, 6): globe(sp_pa)}
-    for name, value in (("u", 10.0), ("v", -5.0), ("t", 220.0)):
-        for level in (850, 700, 250):
+    f = {("sp", 0, 6): globe(sp_pa), ("cp", 0, 3): globe(0.003), ("cp", 0, 6): globe(0.00765)}  # 1.55 mm/h
+    for level in PL_LEVELS:
+        isa_m = pressure_altitude_ft(level * 100.0) * 0.3048
+        for name, value in (("u", 10.0), ("v", -5.0), ("t", 220.0), ("gh", isa_m), ("r", 50.0)):
             f[(name, level, 6)] = globe(value)
-    for name, value in (("10u", 2.0), ("10v", 1.0), ("2t", 288.15)):
+    for name, value in (("10u", 2.0), ("10v", 1.0), ("2t", 288.15), ("mucape", 800.0)):
         f[(name, 0, 6)] = globe(value)
     return f
 
@@ -43,9 +47,29 @@ def test_decide():
     assert decide(RUN, RUN, RUN + timedelta(hours=19)) == "stale"
 
 def test_build_writes_every_tile_and_the_manifest(tmp_path):
-    count = build(RUN, fields(), tmp_path, levels=["250"], steps=[6])
+    count = build(RUN, fields(), tmp_path, levels=["250"], hazard_levels=[], steps=[6])
     assert count == 42
     assert (tmp_path / "wind/v1/2026101900/2026101906/250/3/3/7.png").exists()
     manifest = json.loads((tmp_path / "wind/v1/manifest.json").read_text())
     assert manifest == {"run": "2026-10-19T00:00:00Z", "frames": ["2026-10-19T06:00:00Z"]}
     assert "ECMWF" in (tmp_path / "index.html").read_text()
+
+def test_hazard_tiles_with_the_wind(tmp_path):
+    count = build(RUN, fields(), tmp_path, levels=["250"], hazard_levels=["250", "col"], steps=[6])
+    assert count == 126
+    # Tile row 2 (0…45°N): row 3 reaches past 85°N, where turbulence and so the whole node has no data.
+    r, g, b = decode_tile((tmp_path / "hazards/v1/2026101900/2026101906/250/3/2/7.png").read_bytes())
+    # Wind is the same on every level, so no shear; −53 °C, so no icing; 0 °C between the ground (15 °C) and 1000 hPa (−53 °C).
+    surface, low = pressure_altitude_ft(np.array([101_325.0, 100_000.0]))
+    expected = (surface + (low - surface) * 15 / 68) / 100
+    assert np.allclose(r, 0) and np.allclose(g, 0) and np.allclose(b, expected, atol=0.05)
+    s, cape, rate = decode_tile((tmp_path / "hazards/v1/2026101900/2026101906/col/3/2/7.png").read_bytes())
+    assert np.allclose(s, 0.5, atol=0.01) and np.allclose(cape, 800) and np.allclose(rate, 1.55, atol=0.01)
+
+def test_hazards_below_ground_are_masked():
+    s, _, _ = hazard_fields(fields(sp_pa=80_000.0), "850", 6)
+    assert np.isnan(s).all()
+
+def test_index_names_the_derived_fields(tmp_path):
+    build(RUN, fields(), tmp_path, levels=["250"], hazard_levels=["col"], steps=[6])
+    assert "Ellrod" in (tmp_path / "index.html").read_text()

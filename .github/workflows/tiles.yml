@@ -3,6 +3,11 @@ on:
   schedule:
     - cron: "25 * * * *"
   workflow_dispatch:
+    inputs:
+      force:
+        description: Build the latest run even if it is already deployed
+        type: boolean
+        default: false
 concurrency:
   group: tiles
   cancel-in-progress: false
@@ -22,7 +27,7 @@ jobs:
       - run: pip install -r requirements.txt -e .
       - run: python -I -m pytest -q
       - id: build
-        run: python -I -m windtiles.build --out site --work "$RUNNER_TEMP/grib"
+        run: python -I -m windtiles.build --out site --work "$RUNNER_TEMP/grib" ${{ inputs.force && '--force' || '' }}
       - if: steps.build.outputs.changed == 'true'
         uses: google-github-actions/auth@v2
         with:

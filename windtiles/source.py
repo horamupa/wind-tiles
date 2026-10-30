@@ -9,12 +9,20 @@ import numpy as np
 from windtiles.grid import NI, NJ, STEP_DEG, normalize
 
 SOURCE = "google"  # ECMWF open data mirror; AWS answered 503 Slow Down on 2026-10-28
-PL_LEVELS = [850, 700, 500, 400, 300, 250, 200, 150]
-PL_PARAMS = ["u", "v", "t"]
-SFC_PARAMS = ["10u", "10v", "2t", "sp"]
+PL_LEVELS = [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100]
+PL_PARAMS = ["u", "v", "t", "gh", "r"]
+SFC_PARAMS = ["10u", "10v", "2t", "sp", "mucape", "cp"]
 WINDS = {"u", "v", "10u", "10v"}
 WIND_LIMIT = 150  # m/s; |wind| at or past it is a broken field
-RANGES = {"t": (150, 350), "2t": (150, 350), "sp": (30_000, 115_000)}  # K, K, Pa
+RANGES = {  # K, K, Pa, m, %, J/kg, m
+    "t": (150, 350),
+    "2t": (150, 350),
+    "sp": (30_000, 115_000),
+    "gh": (-1_000, 25_000),
+    "r": (-1, 160),
+    "mucape": (-1, 20_000),
+    "cp": (-1e-6, 2),
+}
 
 
 def latest_run(client) -> datetime:
@@ -24,12 +32,12 @@ def latest_run(client) -> datetime:
 
 
 def download(client, run: datetime, steps: list[int], directory: Path) -> list[Path]:
-    """Pressure levels and surface fields of one run into two GRIB2 files."""
+    """Pressure levels and surface fields of one run into two GRIB2 files; surface also at step 3 for cp."""
     directory.mkdir(parents=True, exist_ok=True)
-    common = dict(date=run.strftime("%Y%m%d"), time=run.hour, stream="oper", type="fc", step=steps)
+    common = dict(date=run.strftime("%Y%m%d"), time=run.hour, stream="oper", type="fc")
     pl, sfc = directory / "pl.grib2", directory / "sfc.grib2"
-    client.retrieve(**common, param=PL_PARAMS, levelist=PL_LEVELS, target=str(pl))
-    client.retrieve(**common, param=SFC_PARAMS, target=str(sfc))
+    client.retrieve(**common, step=steps, param=PL_PARAMS, levelist=PL_LEVELS, target=str(pl))
+    client.retrieve(**common, step=[3] + steps, param=SFC_PARAMS, target=str(sfc))
     return [pl, sfc]
 
 

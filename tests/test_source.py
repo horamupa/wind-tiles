@@ -1,7 +1,12 @@
+from datetime import datetime, timezone
+from types import SimpleNamespace
 import eccodes
 import numpy as np
 import pytest
+from windtiles import source
 from windtiles.source import read_fields
+
+RUN = datetime(2026, 10, 19, 0, tzinfo=timezone.utc)
 
 def grib(path, ni=1440, nj=721, step_deg=0.25, first_lat=90.0, keys=None, values=None):
     handle = eccodes.codes_grib_new_from_samples("regular_ll_pl_grib2")
@@ -44,9 +49,22 @@ def test_rejects_missing_values(tmp_path):
     with pytest.raises(ValueError, match="u 250 6: has missing"):
         read_fields([grib(tmp_path / "gap.grib2", keys={"bitmapPresent": 1, "missingValue": 9999}, values=values)])
 
-@pytest.mark.parametrize("keys, value", [({}, 150.0), ({}, -151.0), ({"shortName": "t"}, 140.0)])
-def test_rejects_a_value_out_of_range(tmp_path, keys, value):
-    values = np.full(1440 * 721, 250.0 if keys else 10.0)
+MUCAPE = {"shortName": "mucape", "typeOfLevel": "mostUnstableParcel"}  # level 250 of the sample hides it otherwise
+
+@pytest.mark.parametrize("keys, valid, value", [
+    ({}, 10.0, 150.0), ({}, 10.0, -151.0), ({"shortName": "t"}, 250.0, 140.0),
+    ({"shortName": "gh"}, 10_000.0, 30_000), ({"shortName": "r"}, 50.0, 200), (MUCAPE, 500.0, 25_000),
+])
+def test_rejects_a_value_out_of_range(tmp_path, keys, valid, value):
+    values = np.full(1440 * 721, valid)
     values[100] = value
     with pytest.raises(ValueError, match="out of range"):
         read_fields([grib(tmp_path / "range.grib2", keys=keys, values=values)])
+
+def test_download_asks_levels_and_surface_with_step_3(tmp_path):
+    calls = []
+    client = SimpleNamespace(retrieve=lambda **kw: calls.append(kw))
+    source.download(client, RUN, [6, 9], tmp_path)
+    pl, sfc = calls
+    assert pl["levelist"] == source.PL_LEVELS and pl["param"] == source.PL_PARAMS and pl["step"] == [6, 9]
+    assert sfc["param"] == source.SFC_PARAMS and sfc["step"] == [3, 6, 9]
