@@ -53,13 +53,20 @@ MUCAPE = {"shortName": "mucape", "typeOfLevel": "mostUnstableParcel"}  # level 2
 
 @pytest.mark.parametrize("keys, valid, value", [
     ({}, 10.0, 150.0), ({}, 10.0, -151.0), ({"shortName": "t"}, 250.0, 140.0),
-    ({"shortName": "gh"}, 10_000.0, 30_000), ({"shortName": "r"}, 50.0, 200), (MUCAPE, 500.0, 25_000),
+    ({"shortName": "gh"}, 10_000.0, 30_000), ({"shortName": "r"}, 50.0, 200),
+    ({"shortName": "r"}, 50.0, -11), (MUCAPE, 500.0, 25_000),
 ])
 def test_rejects_a_value_out_of_range(tmp_path, keys, valid, value):
     values = np.full(1440 * 721, valid)
     values[100] = value
     with pytest.raises(ValueError, match="out of range"):
         read_fields([grib(tmp_path / "range.grib2", keys=keys, values=values)])
+
+def test_accepts_slightly_negative_humidity(tmp_path):  # IFS sends r down to −5.6 %
+    values = np.full(1440 * 721, 50.0)
+    values[100] = -5.6
+    fields = read_fields([grib(tmp_path / "r.grib2", keys={"shortName": "r"}, values=values)])
+    assert fields[("r", 250, 6)].min() == pytest.approx(-5.6, abs=0.01)
 
 def test_download_asks_levels_and_surface_with_step_3(tmp_path):
     calls = []
